@@ -1,0 +1,28 @@
+html, body, #root { height: 100%; margin: 0; }
+body { font-family: system-ui, sans-serif; background: #1e1e1e; color: #eee; }
+
+.app { display: flex; flex-direction: column; height: 100%; }
+
+header { display: flex; align-items: center; gap: 1rem; padding: 0.75rem; background: #2a2a2a; }
+header button { padding: 0.5rem 1.25rem; font-size: 1rem; cursor: pointer; }
+header button:disabled { cursor: not-allowed; }
+
+main { flex: 1; min-height: 0; display: flex; gap: 1rem; align-items: stretch; justify-content: center; padding: 1rem; }
+.viewer { flex: 1; min-width: 0; display: flex; align-items: center; justify-content: center; }
+.viewer img { max-width: 100%; max-height: 100%; object-fit: contain; }
+main textarea {
+  width: 320px; flex: none; resize: none; padding: 0.5rem; font: inherit; order: -1;
+  background: #2a2a2a; color: #eee; border: 1px solid #444; border-radius: 4px;
+}
+main > p { align-self: center; }
+
+footer { display: flex; gap: 0.5rem; padding: 0.5rem; overflow-x: auto; background: #2a2a2a; }
+footer img {
+  height: 90px; width: auto; flex: none; cursor: pointer;
+  border: 3px solid transparent; border-radius: 4px; opacity: 0.45;
+}
+footer img:hover { opacity: 0.8; }
+footer img.active {
+  border-color: #00ff40; opacity: 1;
+  box-shadow: 0 0 0 1px #00ff40, 0 0 6px 1px rgba(0, 255, 64, 0.8);
+}
