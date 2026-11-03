@@ -1,5 +1,6 @@
 import JSZip from "jszip";
 import { ChangeEvent, InputHTMLAttributes, useCallback, useEffect, useRef, useState } from "react";
+import Editor, { Sessions } from "./Editor";
 
 interface ImageItem {
   file: File;
@@ -29,6 +30,25 @@ const IMAGE_MIME: Record<string, string> = {
   ".avif": "image/avif",
 };
 
+// Images are shown as loaded and only encoded to PNG on export, which keeps loading fast
+const toPng = async (blob: Blob): Promise<Blob> => {
+  if (blob.type === "image/png") return blob;
+  const bitmap = await createImageBitmap(blob);
+  const canvas = document.createElement("canvas");
+  canvas.width = bitmap.width;
+  canvas.height = bitmap.height;
+  canvas.getContext("2d")!.drawImage(bitmap, 0, 0);
+  bitmap.close();
+  const png = await new Promise<Blob | null>((resolve) => canvas.toBlob(resolve, "image/png"));
+  if (!png) throw new Error("PNG conversion failed");
+  return png;
+};
+
+const makeItem = (blob: Blob, text: string): ImageItem => {
+  const file = new File([blob], "image", { type: blob.type });
+  return { file, ext: ".png", text, url: URL.createObjectURL(file) };
+};
+
 // webkitdirectory is not part of React's typings
 const dirProps = { webkitdirectory: "", directory: "" } as InputHTMLAttributes<HTMLInputElement>;
 
@@ -39,9 +59,11 @@ export default function App() {
   const textRef = useRef<HTMLTextAreaElement>(null);
   const [images, setImages] = useState<ImageItem[]>([]);
   const [selected, setSelected] = useState(0);
+  const [exporting, setExporting] = useState(false);
 
   const imagesRef = useRef(images);
   imagesRef.current = images;
+  const sessions = useRef<Sessions>(new Map());
 
   // Release remaining object URLs on unmount
   useEffect(() => () => imagesRef.current.forEach((i) => URL.revokeObjectURL(i.url)), []);
@@ -50,6 +72,7 @@ export default function App() {
     const list = imagesRef.current;
     if (!list[selected]) return;
     URL.revokeObjectURL(list[selected].url);
+    sessions.current.delete(list[selected].url);
     const next = list.filter((_, i) => i !== selected);
     setImages(next);
     setSelected(Math.min(selected, next.length - 1));
@@ -80,6 +103,13 @@ export default function App() {
     textRef.current?.focus();
   }, [selected, images.length]);
 
+  // New images are appended; the first appended image becomes the selected one
+  const appendItems = (items: ImageItem[]) => {
+    if (items.length === 0) return;
+    setSelected(imagesRef.current.length);
+    setImages((list) => [...list, ...items]);
+  };
+
   const importZip = async (e: ChangeEvent<HTMLInputElement>) => {
     const zipFile = e.target.files?.[0];
     e.target.value = "";
@@ -96,20 +126,16 @@ export default function App() {
       }
       const items: ImageItem[] = [];
       for (const f of imageEntries) {
-        const ext = extOf(f.name);
-        const blob = new Blob([await f.async("arraybuffer")], { type: IMAGE_MIME[ext] });
-        const file = new File([blob], f.name.split("/").pop()!, { type: blob.type });
-        items.push({ file, ext, text: texts.get(stem(f.name)) ?? "", url: URL.createObjectURL(file) });
+        const blob = new Blob([await f.async("arraybuffer")], { type: IMAGE_MIME[extOf(f.name)] });
+        items.push(makeItem(blob, texts.get(stem(f.name)) ?? ""));
       }
-      imagesRef.current.forEach((i) => URL.revokeObjectURL(i.url));
-      setImages(items);
-      setSelected(0);
+      appendItems(items);
     } catch {
       alert("Die ZIP-Datei konnte nicht gelesen werden.");
     }
   };
 
-  const importDir = async (e: ChangeEvent<HTMLInputElement>) => {
+  const importFiles = async (e: ChangeEvent<HTMLInputElement>) => {
     const files = Array.from(e.target.files ?? []);
     e.target.value = "";
     const path = (f: File) => f.webkitRelativePath || f.name;
@@ -121,61 +147,65 @@ export default function App() {
     for (const f of files) {
       if (extOf(f.name) === ".txt") texts.set(stem(path(f)), await f.text());
     }
-    const items: ImageItem[] = imageFiles.map((f) => ({
-      file: f,
-      ext: extOf(f.name),
-      text: texts.get(stem(path(f))) ?? "",
-      url: URL.createObjectURL(f),
-    }));
-    imagesRef.current.forEach((i) => URL.revokeObjectURL(i.url));
-    setImages(items);
-    setSelected(0);
-  };
-
-  const onChange = (e: ChangeEvent<HTMLInputElement>) => {
-    const files = Array.from(e.target.files ?? [])
-      .filter((f) => f.type.startsWith("image/"))
-      .sort((a, b) => a.name.localeCompare(b.name, undefined, { numeric: true }));
-    imagesRef.current.forEach((i) => URL.revokeObjectURL(i.url));
-    setImages(files.map((f) => ({ file: f, ext: extOf(f.name), text: "", url: URL.createObjectURL(f) })));
-    setSelected(0);
-    e.target.value = "";
+    const items = imageFiles.map((f) => makeItem(f, texts.get(stem(path(f))) ?? ""));
+    appendItems(items);
   };
 
   const setText = (text: string) =>
     setImages((list) => list.map((img, i) => (i === selected ? { ...img, text } : img)));
 
   const exportZip = async () => {
+    setExporting(true);
     const zip = new JSZip();
-    images.forEach((img, i) => {
-      const name = nameAt(i, images.length, img.ext);
-      zip.file(name, img.file);
-      zip.file(name.slice(0, name.length - img.ext.length) + ".txt", img.text);
-    });
+    try {
+      for (let i = 0; i < images.length; i++) {
+        const img = images[i];
+        const name = nameAt(i, images.length, img.ext);
+        zip.file(name, await toPng(img.file));
+        zip.file(name.slice(0, name.length - img.ext.length) + ".txt", img.text);
+      }
+    } catch {
+      alert("Ein Bild konnte nicht in PNG umgewandelt werden.");
+      setExporting(false);
+      return;
+    }
     const blob = await zip.generateAsync({ type: "blob" });
     const a = document.createElement("a");
     a.href = URL.createObjectURL(blob);
     a.download = "images.zip";
     a.click();
     URL.revokeObjectURL(a.href);
+    setExporting(false);
   };
 
   const current = images[selected];
   const total = images.length;
   const currentName = current ? nameAt(selected, total, current.ext) : "";
 
+  // Edited images contain transparency, so they are stored as PNG
+  const saveEdited = (blob: Blob) => {
+    const old = imagesRef.current[selected];
+    if (!old) return;
+    const file = new File([blob], "edited.png", { type: "image/png" });
+    sessions.current.delete(old.url);
+    URL.revokeObjectURL(old.url);
+    setImages((list) =>
+      list.map((img, i) => (i === selected ? { ...img, file, ext: ".png", url: URL.createObjectURL(file) } : img))
+    );
+  };
+
   return (
     <div className="app">
       <header>
-        <button onClick={() => inputRef.current?.click()}>Upload</button>
+        <button onClick={() => inputRef.current?.click()}>Bilder hinzufügen</button>
         <button onClick={() => zipInputRef.current?.click()}>Import ZIP</button>
         <button onClick={() => dirInputRef.current?.click()}>Import Ordner</button>
-        <input ref={dirInputRef} type="file" multiple hidden onChange={importDir} {...dirProps} />
+        <input ref={dirInputRef} type="file" multiple hidden onChange={importFiles} {...dirProps} />
         <input ref={zipInputRef} type="file" accept=".zip,application/zip" hidden onChange={importZip} />
-        <button onClick={exportZip} disabled={images.length === 0}>
-          Export
+        <button onClick={exportZip} disabled={images.length === 0 || exporting}>
+          {exporting ? "Exportiere…" : "Export"}
         </button>
-        <input ref={inputRef} type="file" multiple hidden onChange={onChange} {...dirProps} />
+        <input ref={inputRef} type="file" multiple accept="image/*,.txt" hidden onChange={importFiles} />
         {current && (
           <span className="info">
             {currentName} ({selected + 1}/{total}) – Strg+Entf zum Löschen
@@ -186,9 +216,13 @@ export default function App() {
       <main>
         {current ? (
           <>
-            <div className="viewer">
-              <img src={current.url} alt={currentName} />
-            </div>
+            <Editor
+              key={current.url}
+              url={current.url}
+              alt={currentName}
+              sessions={sessions.current}
+              onSave={saveEdited}
+            />
             <textarea
               ref={textRef}
               value={current.text}
@@ -197,7 +231,7 @@ export default function App() {
             />
           </>
         ) : (
-          <p>Keine Bilder geladen. Klicke auf „Upload“, um einen Ordner zu wählen.</p>
+          <p>Keine Bilder geladen. Füge Bilder, einen Ordner oder eine ZIP-Datei hinzu.</p>
         )}
       </main>
 
