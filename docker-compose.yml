@@ -1,0 +1,7 @@
+services:
+  lora-tagger:
+    build: .
+    image: ghcr.io/buchtl/lora_tagger:latest
+    ports:
+      - "8080:80"
+    restart: unless-stopped
