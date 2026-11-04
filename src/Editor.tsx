@@ -296,6 +296,8 @@ export default function Editor({ url, alt, sessions, onSave }: Props) {
     : null;
   const selectionWidth = selectionBounds ? selectionBounds.right - selectionBounds.x : 0;
   const selectionHeight = selectionBounds ? selectionBounds.bottom - selectionBounds.y : 0;
+  const imageWidth = canvasRef.current?.width ?? 0;
+  const imageHeight = canvasRef.current?.height ?? 0;
 
   const cropToSelection = () => {
     const canvas = canvasRef.current;
@@ -446,6 +448,11 @@ export default function Editor({ url, alt, sessions, onSave }: Props) {
               <svg viewBox="0 0 24 24"><rect x="4" y="4" width="16" height="16" strokeDasharray="3 2" /></svg>
             </button>
           </div>
+        </section>
+
+        <section className="selection-actions">
+          <h4>Bildgröße</h4>
+          <div className="selection-size">{imageWidth} × {imageHeight} px</div>
         </section>
 
         {selection && (
