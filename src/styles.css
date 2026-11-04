@@ -14,6 +14,10 @@ main { flex: 1; min-height: 0; display: flex; gap: 1rem; align-items: stretch; j
   max-width: 100%; max-height: 100%; cursor: none; touch-action: none;
   background: repeating-conic-gradient(#555 0% 25%, #3a3a3a 0% 50%) 0 0 / 20px 20px;
 }
+.selection-overlay { position: absolute; pointer-events: none; overflow: visible; }
+.selection-overlay.interactive { pointer-events: all; touch-action: none; }
+.selection-border { fill: none; stroke: #fff; stroke-width: 1.5; stroke-dasharray: 5 3; }
+.selection-handle { fill: #fff; stroke: #111; stroke-width: 1; }
 .brush-ring {
   position: absolute; display: none; pointer-events: none; box-sizing: border-box;
   border: 1px solid #fff; box-shadow: 0 0 0 1px #000; border-radius: 50%; transform: translate(-50%, -50%);
@@ -38,6 +42,8 @@ main { flex: 1; min-height: 0; display: flex; gap: 1rem; align-items: stretch; j
 .actions button:disabled { opacity: 0.4; cursor: not-allowed; }
 .actions button.primary { background: #00c030; border-color: #00c030; color: #000; font-weight: 600; }
 .actions button.primary:hover:not(:disabled) { background: #00e038; }
+.selection-actions { padding-top: 0.25rem; }
+.selection-size { font-family: monospace; font-size: 0.95rem; }
 
 .picker { display: flex; flex-direction: column; gap: 0.6rem; }
 .picker-sv { position: relative; height: 140px; border-radius: 6px; cursor: crosshair; touch-action: none; }
