@@ -27,6 +27,15 @@ interface SelectionEdges {
   bottom: boolean;
 }
 
+interface Floating {
+  url: string;
+  img: HTMLImageElement;
+  x: number;
+  y: number;
+  width: number;
+  height: number;
+}
+
 type SelectionDrag =
   | { type: "create"; startX: number; startY: number }
   | { type: "move" | "resize"; startX: number; startY: number; original: Selection; edges?: SelectionEdges };
@@ -37,11 +46,16 @@ export default function Editor({ url, alt, sessions, onSave }: Props) {
   const selectionSvgRef = useRef<SVGSVGElement>(null);
   const lastPoint = useRef<{ x: number; y: number } | null>(null);
   const selectionDrag = useRef<SelectionDrag | null>(null);
+  const floatDrag = useRef<{ startX: number; startY: number; origX: number; origY: number } | null>(null);
   const [brushSize, setBrushSize] = useState(30);
   const [mode, setMode] = useState<"erase" | "paint" | "select">("erase");
   const [shape, setShape] = useState<"round" | "square">("round");
   const [color, setColor] = useState("#ff0000");
   const [selection, setSelection] = useState<Selection | null>(null);
+  const [floating, setFloating] = useState<Floating | null>(null);
+  const floatingRef = useRef<Floating | null>(null);
+  floatingRef.current = floating;
+  const commitFloatingRef = useRef<() => void>(() => {});
   const [, force] = useState(0);
   const rerender = () => force((n) => n + 1);
 
@@ -137,6 +151,12 @@ export default function Editor({ url, alt, sessions, onSave }: Props) {
     e.preventDefault();
     e.currentTarget.setPointerCapture(e.pointerId);
     const { x, y } = toSelectionPoint(e);
+    if (floating) {
+      if (x >= floating.x && x <= floating.x + floating.width && y >= floating.y && y <= floating.y + floating.height) {
+        floatDrag.current = { startX: x, startY: y, origX: floating.x, origY: floating.y };
+      }
+      return;
+    }
     const edges = selectionEdgesAt(x, y);
     if (selection && edges) {
       selectionDrag.current = { type: "resize", startX: x, startY: y, original: selection, edges };
@@ -156,6 +176,16 @@ export default function Editor({ url, alt, sessions, onSave }: Props) {
 
   const onSelectionPointerMove = (e: PointerEvent<SVGSVGElement>) => {
     const { x, y } = toSelectionPoint(e);
+    if (floating) {
+      const fd = floatDrag.current;
+      if (fd) {
+        setFloating({ ...floating, x: fd.origX + x - fd.startX, y: fd.origY + y - fd.startY });
+      } else {
+        const inside = x >= floating.x && x <= floating.x + floating.width && y >= floating.y && y <= floating.y + floating.height;
+        e.currentTarget.style.cursor = inside ? "move" : "default";
+      }
+      return;
+    }
     const drag = selectionDrag.current;
     if (!drag) {
       const edges = selectionEdgesAt(x, y);
@@ -220,6 +250,7 @@ export default function Editor({ url, alt, sessions, onSave }: Props) {
   const endSelectionDrag = (e: PointerEvent<SVGSVGElement>) => {
     if (selectionDrag.current) onSelectionPointerMove(e);
     selectionDrag.current = null;
+    floatDrag.current = null;
   };
 
   const drawTo = (e: PointerEvent<HTMLCanvasElement>) => {
@@ -335,6 +366,91 @@ export default function Editor({ url, alt, sessions, onSave }: Props) {
     rerender();
   };
 
+  const startFloating = async (blob: Blob) => {
+    const canvas = canvasRef.current;
+    if (!canvas) return;
+    const url = URL.createObjectURL(blob);
+    const img = new Image();
+    img.src = url;
+    try {
+      await img.decode();
+    } catch {
+      URL.revokeObjectURL(url);
+      alert("Das Bild aus der Zwischenablage konnte nicht gelesen werden.");
+      return;
+    }
+    // Oversized images are scaled down so the whole pasted image fits into the canvas
+    const fit = Math.min(1, canvas.width / img.naturalWidth, canvas.height / img.naturalHeight);
+    const width = Math.max(1, Math.round(img.naturalWidth * fit));
+    const height = Math.max(1, Math.round(img.naturalHeight * fit));
+    if (floatingRef.current) URL.revokeObjectURL(floatingRef.current.url);
+    setSelection(null);
+    setFloating({ url, img, width, height, x: Math.round((canvas.width - width) / 2), y: Math.round((canvas.height - height) / 2) });
+  };
+
+  const pasteFromButton = async () => {
+    try {
+      for (const item of await navigator.clipboard.read()) {
+        const type = item.types.find((t) => t.startsWith("image/"));
+        if (type) return startFloating(await item.getType(type));
+      }
+      alert("Die Zwischenablage enthält kein Bild.");
+    } catch {
+      alert("Kein Zugriff auf die Zwischenablage. Verwende Strg+V.");
+    }
+  };
+
+  const discardFloating = () => {
+    if (floatingRef.current) URL.revokeObjectURL(floatingRef.current.url);
+    floatDrag.current = null;
+    setFloating(null);
+  };
+
+  const commitFloating = () => {
+    const canvas = canvasRef.current;
+    if (!canvas || !floating) return;
+    let history = sessions.get(url);
+    if (!history) {
+      history = [ctx().getImageData(0, 0, canvas.width, canvas.height)];
+      sessions.set(url, history);
+    }
+    const c = ctx();
+    c.globalCompositeOperation = "source-over";
+    c.drawImage(floating.img, Math.round(floating.x), Math.round(floating.y), floating.width, floating.height);
+    history.push(c.getImageData(0, 0, canvas.width, canvas.height));
+    if (history.length > MAX_HISTORY) history.shift();
+    discardFloating();
+  };
+
+  commitFloatingRef.current = commitFloating;
+
+  useEffect(() => {
+    const onPaste = (e: ClipboardEvent) => {
+      const file = Array.from(e.clipboardData?.files ?? []).find((f) => f.type.startsWith("image/"));
+      if (!file) return;
+      e.preventDefault();
+      startFloating(file);
+    };
+    const onKey = (e: KeyboardEvent) => {
+      if (!floatingRef.current) return;
+      if (e.key === "Enter") {
+        e.preventDefault();
+        commitFloatingRef.current();
+      } else if (e.key === "Escape") {
+        e.preventDefault();
+        discardFloating();
+      }
+    };
+    window.addEventListener("paste", onPaste);
+    window.addEventListener("keydown", onKey);
+    return () => {
+      window.removeEventListener("paste", onPaste);
+      window.removeEventListener("keydown", onKey);
+      if (floatingRef.current) URL.revokeObjectURL(floatingRef.current.url);
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
   const history = sessions.get(url);
   const canUndo = !!history && history.length > 1;
 
@@ -381,7 +497,7 @@ export default function Editor({ url, alt, sessions, onSave }: Props) {
           <div ref={ringRef} className="brush-ring" style={{ width: brushSize, height: brushSize, borderRadius: shape === "round" ? "50%" : 0 }} />
           <svg
             ref={selectionSvgRef}
-            className={`selection-overlay ${mode === "select" ? "interactive" : ""}`}
+            className={`selection-overlay ${mode === "select" || floating ? "interactive" : ""}`}
             viewBox={`0 0 ${canvasRef.current?.width || 1} ${canvasRef.current?.height || 1}`}
             preserveAspectRatio="none"
             onPointerDown={onSelectionPointerDown}
@@ -389,6 +505,12 @@ export default function Editor({ url, alt, sessions, onSave }: Props) {
             onPointerUp={endSelectionDrag}
             onPointerCancel={endSelectionDrag}
           >
+            {floating && (
+              <>
+                <image href={floating.url} x={floating.x} y={floating.y} width={floating.width} height={floating.height} preserveAspectRatio="none" />
+                <rect x={floating.x} y={floating.y} width={floating.width} height={floating.height} className="selection-border" vectorEffect="non-scaling-stroke" />
+              </>
+            )}
             {selection && selection.width > 0 && selection.height > 0 && (
               <>
                 <path
@@ -448,6 +570,19 @@ export default function Editor({ url, alt, sessions, onSave }: Props) {
               <svg viewBox="0 0 24 24"><rect x="4" y="4" width="16" height="16" strokeDasharray="3 2" /></svg>
             </button>
           </div>
+        </section>
+
+        <section className="actions selection-actions">
+          <h4>Zwischenablage</h4>
+          {floating ? (
+            <>
+              <div className="selection-size">{floating.width} × {floating.height} px</div>
+              <button className="primary" onClick={commitFloating}>Übernehmen (Enter)</button>
+              <button onClick={discardFloating}>Verwerfen (Esc)</button>
+            </>
+          ) : (
+            <button onClick={pasteFromButton}>Bild einfügen (Strg+V)</button>
+          )}
         </section>
 
         <section className="selection-actions">
